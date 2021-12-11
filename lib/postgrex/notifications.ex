@@ -232,7 +232,7 @@ defmodule Postgrex.Notifications do
         nil -> opts()
       end
 
-    case Protocol.connect([types: nil] ++ opts) do
+    case Protocol.connect(opts) do
       {:ok, protocol} ->
         s = %{s | listener_channels: %{}, connected: true, protocol: protocol}
         Enum.reduce_while(s.listeners, {:ok, s, s.idle_interval}, &reestablish_listener/2)
@@ -247,6 +247,25 @@ defmodule Postgrex.Notifications do
   end
 
   @doc false
+  def handle_call({:query, query}, from, %{protocol: protocol} = s) do
+    case Protocol.handle_simple(query, [], protocol) do
+      {:ok, %Postgrex.Result{} = result, protocol} ->
+        Connection.reply(from, {:ok, result})
+
+        checkin(protocol, s)
+
+      {error, reason, protocol} ->
+        case reconnect_or_stop(error, reason, protocol, s) do
+          {:stop, _, _} = stop ->
+            stop
+
+          {:connect, _, _} = connect ->
+            Connection.reply(from, {:error, reason})
+
+            connect
+    end
+  end
+
   def handle_call({:listen, channel}, {pid, _} = from, s) do
     ref = Process.monitor(pid)
     s = put_in(s.listeners[ref], {channel, pid})
